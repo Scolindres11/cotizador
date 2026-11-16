@@ -122,6 +122,7 @@ function Organizaciones() {
         <label style={{ flex: '0 0 auto' }}><input type="checkbox" style={{ width: 'auto', minHeight: 0 }} checked={soloFaltan} onChange={(e) => setSoloFaltan(e.target.checked)} /> Solo sin tasa</label>
         <button className="btn sec" style={{ flex: '0 0 auto' }} onClick={nueva}>+ Organización</button>
       </div>
+      <ImportarOrgs />
       <div className="tabla-cont" style={{ maxHeight: 520 }}>
         <table>
           <thead><tr>{COLS_ORG.map(([k, t]) => <th key={k}>{t}</th>)}</tr></thead>
@@ -129,6 +130,126 @@ function Organizaciones() {
         </table>
       </div>
     </div>
+  )
+}
+
+/* Importar organizaciones desde Excel: actualiza por Lote + N.º PN (o por nombre) y agrega las nuevas. No borra. */
+const ALIAS_ORG = {
+  organizacion: ['organizacion', 'organización', 'nombre de la organizacion', 'nombre organizacion', 'op'],
+  lote: ['lote'], n_pn: ['n_pn', 'n.º pn', 'n° pn', 'no. pn', 'n pn', 'pn', 'numero pn', 'nº pn'],
+  municipio: ['municipio'], comunidad: ['comunidad'], cadena_valor: ['cadena_valor', 'cadena de valor', 'rubro'],
+  subproyecto: ['subproyecto', 'nombre del subproyecto'], tecnico_1: ['tecnico_1', 'tecnico 1', 'técnico 1'],
+  tecnico_2: ['tecnico_2', 'tecnico 2', 'técnico 2'], formulador: ['formulador'],
+  flete_pct: ['flete_pct', 'flete', 'flete %', '% flete', 'tasa flete'], seguro_pct: ['seguro_pct', 'seguro', 'seguro %', '% seguro', 'tasa seguro'],
+  observacion: ['observacion', 'observación', 'observaciones', 'estado'],
+}
+const normEnc = (h) => sinTildes(h).replace(/[º°]/g, 'º').replace(/\s+/g, ' ').trim()
+const clave = (o) => (o.lote && o.n_pn ? `pn|${sinTildes(o.lote).trim()}|${String(o.n_pn).trim()}` : null)
+const claveNombre = (o) => `nom|${sinTildes(o.organizacion).replace(/\s+/g, ' ').trim()}`
+const tasa = (v) => {
+  if (v === '' || v === null || v === undefined) return null
+  const n = aNumero(String(v).replace('%', ''))
+  if (n === null || n < 0) return null
+  return n > 1 ? Math.round(n * 100) / 10000 : n
+}
+const igual = (a, b) => String(a ?? '') === String(b ?? '')
+
+function ImportarOrgs() {
+  const { orgs, setOrgs } = useDatos()
+  const aviso = useAviso()
+  const [plan, setPlan] = useState(null) // {nuevas, cambios, iguales, hoja}
+  const [error, setError] = useState('')
+  const [ocupado, setOcupado] = useState(false)
+
+  const leer = async (archivo) => {
+    setError(''); setPlan(null)
+    if (!archivo) return
+    try {
+      const XLSX = await import('xlsx')
+      const wb = XLSX.read(await archivo.arrayBuffer())
+      const nombres = wb.SheetNames
+      const hoja = nombres.find((n) => /^web_organizaciones$/i.test(n)) || nombres.find((n) => /organizacion/i.test(sinTildes(n))) || nombres[0]
+      const filas = XLSX.utils.sheet_to_json(wb.Sheets[hoja], { defval: '' })
+      if (!filas.length) { setError(`La hoja "${hoja}" está vacía.`); return }
+      const encs = Object.keys(filas[0])
+      const mapa = {}
+      for (const [campo, alias] of Object.entries(ALIAS_ORG)) {
+        const h = encs.find((e) => alias.includes(normEnc(e)))
+        if (h) mapa[campo] = h
+      }
+      if (!mapa.organizacion) { setError(`No encontré la columna "organizacion" en la hoja "${hoja}".`); return }
+      const existentes = new Map()
+      for (const o of orgs) { const k = clave(o); if (k) existentes.set(k, o); existentes.set(claveNombre(o), existentes.get(claveNombre(o)) || o) }
+      const nuevas = [], cambios = [], vistos = new Set()
+      let iguales = 0
+      for (const r of filas) {
+        const f = {}
+        for (const [campo, h] of Object.entries(mapa)) {
+          const v = r[h]
+          f[campo] = campo.endsWith('_pct') ? tasa(v) : (String(v ?? '').trim() || null)
+        }
+        if (!f.organizacion) continue
+        const k = clave(f) || claveNombre(f)
+        if (vistos.has(k)) continue
+        vistos.add(k)
+        const o = (clave(f) && existentes.get(clave(f))) || existentes.get(claveNombre(f))
+        if (!o) { nuevas.push(f); continue }
+        // Solo se actualizan las columnas que vienen en el Excel; una celda vacía no borra lo que ya hay
+        const dif = {}
+        for (const campo of Object.keys(mapa)) if (f[campo] !== null && !igual(f[campo], o[campo])) dif[campo] = f[campo]
+        if (Object.keys(dif).length) cambios.push({ o, dif }); else iguales++
+      }
+      setPlan({ nuevas, cambios, iguales, hoja })
+    } catch (e) { setError(`No se pudo leer el archivo: ${e.message || e}`) }
+  }
+
+  const aplicar = async () => {
+    setOcupado(true)
+    try {
+      const actualizadas = []
+      for (const { o, dif } of plan.cambios) {
+        const { data, error: e } = await supabase.from('organizaciones').update(dif).eq('id', o.id).select().single()
+        if (e) throw e
+        actualizadas.push(data)
+      }
+      let creadas = []
+      if (plan.nuevas.length) {
+        const { data, error: e } = await supabase.from('organizaciones').insert(plan.nuevas).select()
+        if (e) throw e
+        creadas = data
+      }
+      const porId = new Map(actualizadas.map((x) => [x.id, x]))
+      setOrgs((l) => [...creadas, ...l.map((x) => porId.get(x.id) || x)])
+      aviso.ok(`Listo: ${creadas.length} nuevas, ${actualizadas.length} actualizadas`)
+      setPlan(null)
+    } catch (e) { aviso.error(e) } finally { setOcupado(false) }
+  }
+
+  const nombresDif = (dif) => Object.keys(dif).map((k) => COLS_ORG.find(([c]) => c === k)?.[1] || k).join(', ')
+
+  return (
+    <details style={{ margin: '8px 0 12px' }}>
+      <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Actualizar desde Excel</summary>
+      <p className="muted">Sube el Excel con la lista de organizaciones (hoja <code>web_organizaciones</code> u otra con columna “organizacion”).
+        Se busca cada fila por Lote + N.º PN, o por nombre. Las nuevas se agregan, las que cambiaron se actualizan.
+        No se borra nada y una celda vacía no borra lo que ya está guardado.</p>
+      <div className="campo"><label>Archivo Excel</label><input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => leer(e.target.files?.[0])} /></div>
+      {error && <div className="aviso rojo">{error}</div>}
+      {plan && (
+        <>
+          <div className="aviso azul">Hoja “{plan.hoja}”: {plan.nuevas.length} nuevas · {plan.cambios.length} con cambios · {plan.iguales} sin cambios.</div>
+          {(plan.nuevas.length > 0 || plan.cambios.length > 0) && (
+            <ul className="muted" style={{ maxHeight: 180, overflow: 'auto' }}>
+              {plan.nuevas.map((f, i) => <li key={`n${i}`}>Nueva: {f.organizacion}{f.lote ? ` (${f.lote})` : ''}</li>)}
+              {plan.cambios.map(({ o, dif }) => <li key={o.id}>{o.organizacion}: {nombresDif(dif)}</li>)}
+            </ul>
+          )}
+          <button className="btn" disabled={ocupado || (!plan.nuevas.length && !plan.cambios.length)} onClick={aplicar}>
+            {ocupado ? 'Guardando…' : 'Aplicar cambios'}
+          </button>
+        </>
+      )}
+    </details>
   )
 }
 
