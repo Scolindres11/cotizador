@@ -16,7 +16,7 @@ Aplicación web para cotizar insumos de las organizaciones de COMRURAL. Reemplaz
 | `VITE_AZURE_ENABLED` | `true` cuando TI active Microsoft (si no, déjala vacía) |
 
 ### Base de datos
-Ejecuta una vez [sql/01_migracion_cotizador.sql](sql/01_migracion_cotizador.sql) en Supabase › SQL Editor. Agrega:
+Ejecuta una vez [sql/00_crear_base.sql](sql/00_crear_base.sql) en Supabase › SQL Editor (proyecto vacío). Crea las tablas, reglas de seguridad (RLS), `es_autorizado()`, `es_admin()`, `buscar_catalogo(q)` y además:
 `organizacion_id`, `es_manual` y `pasado_catalogo` en `cotizaciones`; la tabla `ordenes_compra` con la función
 `crear_orden_compra`; la función `vaciar_catalogo` (solo admin), y activa Realtime en `cotizaciones`.
 
