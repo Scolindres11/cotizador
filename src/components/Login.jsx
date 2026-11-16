@@ -4,6 +4,16 @@ import { useAviso } from './comun.jsx'
 
 const BASE = import.meta.env.BASE_URL
 
+// Si el enlace del correo ya se usó o venció, Supabase vuelve con #error=... en la dirección
+const errorEnlace = (() => {
+  const h = new URLSearchParams(window.location.hash.slice(1))
+  if (!h.get('error')) return ''
+  window.history.replaceState(null, '', window.location.pathname)
+  return h.get('error_code') === 'otp_expired'
+    ? 'Ese enlace ya se usó o venció. Cada enlace sirve una sola vez: pide uno nuevo y ábrelo en este navegador.'
+    : `No se pudo entrar con el enlace: ${h.get('error_description') || h.get('error')}`
+})()
+
 export default function Login() {
   const aviso = useAviso()
   const [email, setEmail] = useState('')
@@ -56,7 +66,7 @@ export default function Login() {
           <div><h2 style={{ margin: 0 }}>Cotizador COMRURAL</h2><span className="muted">GOAL Honduras</span></div>
         </div>
 
-        {enviado && <div className="aviso azul">{enviado}</div>}
+        {enviado ? <div className="aviso azul">{enviado}</div> : errorEnlace && <div className="aviso rojo">{errorEnlace}</div>}
 
         <form onSubmit={entrar}>
           <div className="campo">
